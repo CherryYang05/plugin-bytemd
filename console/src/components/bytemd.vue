@@ -13,7 +13,8 @@ import {
   type BytemdEditorContext,
   type BytemdPlugin,
 } from "bytemd";
-import { watch, onMounted, ref } from "vue";
+import { computed, watch, onMounted, ref } from "vue";
+import { allowInlineStyles } from "../utils/sanitize";
 import math from "@bytemd/plugin-math";
 import breaks from "@bytemd/plugin-breaks";
 import type { AttachmentLike } from "@halo-dev/ui-shared";
@@ -50,6 +51,11 @@ const createPlugins = (useVimKeymap = false): BytemdPlugin[] => {
 };
 
 const plugins = ref<BytemdPlugin[]>(createPlugins());
+const configLoaded = ref(false);
+const inlineStylesEnabled = ref(false);
+const sanitize = computed(() =>
+  inlineStylesEnabled.value ? allowInlineStyles : undefined
+);
 let contentRenderVersion = 0;
 
 const VIM_KEYMAP_NAME = "vim";
@@ -82,6 +88,13 @@ const handleChange = (v: string) => {
 };
 
 type UploadContext = "console" | "uc";
+
+interface BytemdPluginConfig {
+  basic?: {
+    keymap?: string;
+    allowInlineStyles?: boolean;
+  };
+}
 
 const matchesPathPrefix = (pathname: string, prefix: string) => {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
@@ -144,23 +157,32 @@ onMounted(async () => {
       }
     );
 
-    const configMapData = data as Record<string, any>;
+    const configMapData = data as BytemdPluginConfig;
+    inlineStylesEnabled.value =
+      configMapData?.basic?.allowInlineStyles === true;
 
     if (configMapData?.basic?.keymap === VIM_KEYMAP_NAME) {
       plugins.value = createPlugins(true);
     }
   } catch (e) {
     // ignore this
+  } finally {
+    configLoaded.value = true;
   }
 });
 
 watch(
-  () => props.raw,
-  async (value) => {
+  [() => props.raw, plugins, sanitize, configLoaded],
+  async ([value, currentPlugins, currentSanitize, loaded]) => {
+    if (!loaded) {
+      return;
+    }
+
     const version = ++contentRenderVersion;
-    const processor = getProcessor({ plugins: plugins.value }).processSync(
-      value
-    );
+    const processor = getProcessor({
+      plugins: currentPlugins,
+      sanitize: currentSanitize,
+    }).processSync(value);
     const content = await renderMermaidInHtml(processor.toString());
 
     if (version === contentRenderVersion) {
@@ -218,8 +240,10 @@ const onAttachmentSelect = (attachments: AttachmentLike[]) => {
 <template>
   <section class="bytemd-wrapper">
     <Editor
+      v-if="configLoaded"
       :value="raw"
       :plugins="plugins"
+      :sanitize="sanitize"
       :upload-images="handleUploadImages"
       @change="handleChange"
     />
